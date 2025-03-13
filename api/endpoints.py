@@ -1,18 +1,45 @@
-from fastapi import APIRouter, HTTPException
+import requests
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
 from models.request import ScoreRequest
-
+from models.database import SessionLocal, OwnerDB, CarDB
 
 router = APIRouter()
 
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-@router.post("/api/score-calculate")
-async def calculate_score(request: ScoreRequest):
-    # Здесь можно добавить логику для обработки данных и расчета рейтинга
-    # Например, вызывать функции из /services/rating.py
 
-    response_data = {
-        "message": "Score calculated successfully",
-        # Здесь можно вернуть рассчитанный рейтинг или другую информацию
-    }
+def check_external_database(data):
+    response = requests.post("https://external.api/check", json=data)  # Поменять на параметры релевантного API
+    if response.status_code == 200:
+        return response.json()
+    else:
+        raise HTTPException(status_code=response.status_code, detail="External API error")
 
-    return response_data
+
+@router.post("/api/external-check")
+async def external_check(request: ScoreRequest, db: Session = Depends(get_db)):
+    # Обращаемся к внешней базе данных
+    result = check_external_database(request.model_dump())
+
+    if result.get("status") == "match":
+        # Записываем положительный результат в базу данных
+        for owner_data in request.owners:
+            owner = OwnerDB(**owner_data.model_dump())
+            db.add(owner)
+            db.commit()
+            db.refresh(owner)
+
+            for car_data in request.car:
+                car = CarDB(**car_data.model_dump(), owner_id=owner.id)
+                db.add(car)
+                db.commit()
+                db.refresh(car)
+
+    return {"message": "External check completed", "result": result}
